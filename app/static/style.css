@@ -202,7 +202,24 @@ tbody tr.hot td:first-child { box-shadow: inset 3px 0 0 var(--hot); }
 .detail table { margin-top: 8px; }
 .stations { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
 
-.legend {
+.leaflet-tooltip.fire-label {
+  background: rgba(28, 25, 23, 0.86);
+  border: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  color: #fafaf9;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 1px 5px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.leaflet-tooltip.fire-label::before { display: none; }
+.leaflet-tooltip.fire-label.selected {
+  background: #f97316;
+  color: #1c1917;
+}
   position: absolute;
   z-index: 500;
   left: 12px;

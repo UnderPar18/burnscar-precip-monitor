@@ -570,6 +570,14 @@ function renderMap() {
       fillOpacity: 0.38,
     }),
     onEachFeature: (feature, layer) => {
+      const selected = feature.properties.id === selectedId;
+      layer.bindTooltip(feature.properties.name || "Unnamed", {
+        permanent: true,
+        direction: "center",
+        className: selected ? "fire-label selected" : "fire-label",
+        opacity: 1,
+        interactive: false,
+      });
       layer.on("click", () => selectFire(feature.properties.id, false));
     },
   }).addTo(perimeterLayer);
