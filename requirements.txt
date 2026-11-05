@@ -1,0 +1,7 @@
+# Install these into the existing ArcGIS Pro environment only if they are missing.
+# That environment already provides httpx, shapely, pyproj, pyyaml, numpy, and GDAL.
+# Do not upgrade numpy, shapely, pyproj, gdal, fiona, or arcpy.
+# Rasterio is not used. MRMS GRIB2 grids are read with osgeo.gdal, already in this environment.
+fastapi==0.115.12
+uvicorn==0.34.2
+python-dotenv==1.1.1

@@ -1,0 +1,12 @@
+# Defaults for the first launch. The dashboard writes your later choices to
+# data/settings.json, which stays on this machine.
+states: []
+min_acres: 100
+buffer_miles: 5
+accum_hours: [1, 6, 24, 48]
+forecast_source: nbm
+forecast_hours: 72
+wildfire_only: true
+refresh_minutes: 15
+highlight_inches: 0.5
+highlight_hours: 6
