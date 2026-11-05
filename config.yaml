@@ -5,7 +5,7 @@ min_acres: 100
 buffer_miles: 5
 accum_hours: [1, 6, 24, 48]
 forecast_source: nbm
-forecast_hours: 72
+forecast_hours: 24
 wildfire_only: true
 refresh_minutes: 15
 highlight_inches: 0.5

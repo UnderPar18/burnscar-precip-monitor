@@ -162,7 +162,22 @@ tbody tr.hot td:first-child { box-shadow: inset 3px 0 0 var(--hot); }
 .series-popup header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .series-popup h2 { margin: 0; font-size: 15px; }
 .series-popup button { width: auto; padding: 4px 10px; }
-#seriesChart svg { width: 100%; height: auto; display: block; margin-top: 4px; }
+#seriesChart { position: relative; }
+#seriesChart svg { width: 100%; height: auto; display: block; margin-top: 4px; cursor: crosshair; }
+.series-tip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  max-width: 240px;
+  padding: 4px 8px;
+  background: rgba(28, 25, 23, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.series-tip strong, .series-tip span { display: block; }
+.series-tip span { color: var(--muted); }
 .radar-bar {
   position: absolute;
   z-index: 650;

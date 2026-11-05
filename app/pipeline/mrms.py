@@ -111,11 +111,32 @@ def subset_window(transform, width: int, height: int, polygons: list[BaseGeometr
     return col0, row0, col1, row1
 
 
-def read_band_window(dataset, window):
+def qpe_band_number(dataset, product: str) -> int:
+    """Band that holds this MRMS QPE product.
+
+    Each RadarOnly QPE file on the MRMS server is one GRIB2 field. If a file
+    ever contains more than one field, only the named product is read.
+    """
+    count = int(dataset.RasterCount)
+    chosen = None
+    for index in range(1, count + 1):
+        element = dataset.GetRasterBand(index).GetMetadataItem("GRIB_ELEMENT") or ""
+        if element == product:
+            if chosen is not None:
+                raise RuntimeError(f"MRMS {product} file contains that field more than once.")
+            chosen = index
+    if chosen is not None:
+        return chosen
+    if count == 1:
+        return 1
+    raise RuntimeError(f"MRMS {product} file has {count} fields and none is {product}.")
+
+
+def read_band_window(dataset, window, band: int = 1):
     """Read one band for a pixel window and return the array plus its geotransform."""
     col0, row0, col1, row1 = window
     transform = dataset.GetGeoTransform()
-    array = dataset.GetRasterBand(1).ReadAsArray(col0, row0, col1 - col0, row1 - row0)
+    array = dataset.GetRasterBand(band).ReadAsArray(col0, row0, col1 - col0, row1 - row0)
     return array, shift_transform(transform, col0, row0)
 
 
@@ -139,13 +160,13 @@ def window_max(array, transform, polygon: BaseGeometry) -> float | None:
     return max_in_polygon(values[row0:row1, col0:col1], window_transform, polygon)
 
 
-def _window_max_mm(dataset, polygon: BaseGeometry) -> float | None:
+def _window_max_mm(dataset, polygon: BaseGeometry, product: str) -> float | None:
     window = subset_window(
         dataset.GetGeoTransform(), dataset.RasterXSize, dataset.RasterYSize, [polygon]
     )
     if window is None:
         return None
-    array, window_transform = read_band_window(dataset, window)
+    array, window_transform = read_band_window(dataset, window, qpe_band_number(dataset, product))
     return max_in_polygon(array, window_transform, polygon)
 
 
@@ -182,7 +203,9 @@ def apply_mrms(fires: list[dict], hours: list[int], progress) -> None:
                     for fire in fires:
                         fire["props"]["mrms_in"][str(hour)] = None
                 else:
-                    array, window_transform = read_band_window(dataset, window)
+                    array, window_transform = read_band_window(
+                        dataset, window, qpe_band_number(dataset, product)
+                    )
                     for fire in fires:
                         millimeters = window_max(array, window_transform, fire["buffer"])
                         fire["props"]["mrms_in"][str(hour)] = (
@@ -279,7 +302,7 @@ def hourly_qpe(polygon: BaseGeometry, hours_back: int = 24) -> list[dict]:
             series.append({"valid": when.strftime("%Y-%m-%dT%H:%M:%SZ"), "inches": None})
             continue
         try:
-            millimeters = _window_max_mm(dataset, polygon)
+            millimeters = _window_max_mm(dataset, polygon, PRODUCTS[1])
         finally:
             dataset = None
         series.append(

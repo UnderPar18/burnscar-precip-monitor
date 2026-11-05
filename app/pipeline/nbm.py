@@ -1,16 +1,19 @@
 """National Blend of Models deterministic precipitation for CONUS.
 
 The value for each interval is the wettest total of that length inside the
-forecast horizon, then the maximum cell inside the fire buffer. Files are
-cloud-optimized GeoTIFFs, already in inches. Only the block covering the fire
-buffers is read. Six-hour and longer totals use the 6-hour QPF. One-hour totals
-use the hourly QPF. A 3-hour total is the wettest sum of three consecutive hours.
+forecast horizon, then the maximum cell inside the fire buffer. Each forecast
+hour is a GRIB2 file with many fields. Only the deterministic QPF message is
+downloaded, using the byte range in the index. Source values are kilograms per
+square meter and are converted to inches. Six-hour and longer totals use the
+6-hour QPF. One-hour totals use the hourly QPF. A 3-hour total is the wettest
+sum of three consecutive hours.
 """
 
 from __future__ import annotations
 
 import re
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -101,6 +104,10 @@ def _download_message(date: str, cycle: str, lead: int, duration: int):
     label = accumulation_label(lead, duration)
     url = _core_prefix(date, cycle, lead)
     path = CACHE_DIR / f"nbm_{date}_{cycle}_f{lead:03d}_{duration}h.grib2"
+    if path.exists() and path.stat().st_size > 16:
+        with path.open("rb") as handle:
+            if handle.read(4) == b"GRIB":
+                return lead, path, None
     try:
         with httpx.Client(timeout=90, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
             index = client.get(url + ".idx")
@@ -160,6 +167,8 @@ def _read_grid(path, window):
         nodata = band.GetNoDataValue()
         if nodata is not None and np.isfinite(nodata):
             array[np.isclose(array, nodata)] = -1
+        valid = array >= 0
+        array[valid] = array[valid] / np.float32(MM_PER_INCH)
         transform = shift_transform(dataset.GetGeoTransform(), col0, row0)
         return array, transform
     finally:
@@ -325,12 +334,16 @@ def _prepare_cog():
 
 
 def attach_nbm(fires: list, hours: list[int], horizon_hours: int, progress) -> str:
-    """Fill forecast_in from the NBM CONUS COG grids. Returns the note for the page."""
+    """Fill forecast_in from NBM GRIB2 QPF messages. Returns the note for the page."""
     if not fires:
         return ""
-    _prepare_cog()
+    from osgeo import gdal
+
+    gdal.UseExceptions()
+    gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")
     with httpx.Client(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
-        cycle_time = latest_cog_run(client)
+        date, cycle = latest_cycle(client)
+    cycle_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(tzinfo=timezone.utc)
     cycle_label = cycle_time.strftime("%Y-%m-%d %HZ")
     for fire in fires:
         fire["props"]["qpf_series"] = []
@@ -344,23 +357,52 @@ def attach_nbm(fires: list, hours: list[int], horizon_hours: int, progress) -> s
     skipped = 0
     download_errors: list[str] = []
 
-    def load_valids(valids: list[datetime], product: str, label: str):
+    def load_leads(leads: list[int], duration: int, label: str):
         nonlocal polygons, transform, read_window, grid_count, skipped
         loaded = []
-        progress(f"Reading NBM {label} from {cycle_label}")
-        for valid in valids:
-            lead = int((valid - cycle_time).total_seconds() // 3600)
-            url = cog_url(cycle_time, product, valid)
-            if polygons is None:
-                width, height, full_transform, projection = _cog_frame(url)
-                polygons = [_project(fire["buffer"], projection) for fire in fires]
-                read_window = subset_window(full_transform, width, height, polygons)
-                if read_window is None:
-                    raise RuntimeError(
-                        "None of the fire buffers intersect the National Blend of Models CONUS grid."
-                    )
+        progress(f"Downloading NBM {label} from {cycle_label}")
+        paths: dict[int, object] = {}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(_download_message, date, cycle, lead, duration) for lead in leads
+            ]
+            finished = 0
+            for future in as_completed(futures):
+                finished += 1
+                lead, path, error = future.result()
+                if error:
+                    skipped += 1
+                    if error not in download_errors and len(download_errors) < 3:
+                        download_errors.append(error)
+                elif path is not None:
+                    paths[lead] = path
+                else:
+                    skipped += 1
+                progress(f"NBM {label} message {finished} of {len(leads)} ({cycle_label})")
+        for lead in leads:
+            path = paths.get(lead)
+            if path is None:
+                continue
             try:
-                array, grid_transform = _read_cog(url, read_window)
+                if polygons is None:
+                    width, height, full_transform, projection = _grid_frame(path)
+                    projected = [_project(fire["buffer"], projection) for fire in fires]
+                    window = subset_window(full_transform, width, height, projected)
+                    if window is None:
+                        raise RuntimeError(
+                            "None of the fire buffers intersect the National Blend of Models CONUS grid."
+                        )
+                    polygons = projected
+                    read_window = window
+                array, grid_transform = _read_grid(path, read_window)
+            except RuntimeError as exc:
+                if "intersect" in str(exc):
+                    raise
+                skipped += 1
+                message = redact(str(exc))
+                if message not in download_errors and len(download_errors) < 3:
+                    download_errors.append(message)
+                continue
             except Exception as exc:
                 skipped += 1
                 message = redact(str(exc))
@@ -375,7 +417,7 @@ def attach_nbm(fires: list, hours: list[int], horizon_hours: int, progress) -> s
         return loaded
 
     if six_hours:
-        loaded = load_valids(cog_six_hour_valids(cycle_time, horizon_hours), "qpf06", "6-hour QPF")
+        loaded = load_leads(six_hour_leads(horizon_hours), 6, "6-hour QPF")
         best = {hour: [None] * len(fires) for hour in six_hours}
         window = max(six_hours) // 6
         recent: deque[tuple[int, np.ndarray]] = deque(maxlen=window)
@@ -396,7 +438,7 @@ def attach_nbm(fires: list, hours: list[int], horizon_hours: int, progress) -> s
             _apply(fires, hour, best[hour], grid_count)
 
     if need_hourly:
-        loaded = load_valids(cog_hourly_valids(cycle_time, horizon_hours), "qpf01", "1-hour QPF")
+        loaded = load_leads(one_hour_leads(horizon_hours), 1, "1-hour QPF")
         best_1 = [None] * len(fires)
         best_3 = [None] * len(fires)
         recent = deque(maxlen=3)
@@ -429,11 +471,12 @@ def attach_nbm(fires: list, hours: list[int], horizon_hours: int, progress) -> s
         if all(fire["props"]["forecast_in"].get(str(hour)) is None for fire in fires)
     ]
     note = (
-        f"Forecast is the National Blend of Models deterministic QPF from the cloud-optimized "
-        f"CONUS grids, cycle {cycle_label}. Values are inches and are the wettest total of that "
-        f"length inside the next {horizon_hours} hours, using the maximum cell in the buffer. "
-        f"Only the block covering the fire buffers is read. Six-hour and longer totals are built "
-        f"from the 6-hour amounts. One-hour and three-hour totals use the hourly amounts. "
+        f"Forecast is the National Blend of Models deterministic QPF, cycle {cycle_label}. "
+        f"Only that QPF message is downloaded from each GRIB2 file. Values are kilograms per "
+        f"square meter, converted to inches, and are the wettest total of that length inside "
+        f"the next {horizon_hours} hours, using the maximum cell in the buffer. "
+        f"Six-hour and longer totals are built from the 6-hour amounts. "
+        f"One-hour and three-hour totals use the hourly amounts. "
         f"Alaska, Hawaii, and Puerto Rico are outside this CONUS grid."
     )
     if blank:

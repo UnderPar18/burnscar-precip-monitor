@@ -362,12 +362,14 @@ function drawChart(fire) {
   const mrms = observedMatch && observed.data ? observed.data.mrms || [] : [];
   const stationRows = observedMatch && observed.data ? observed.data.stations || [] : [];
   const station = hourlyMax(observedMatch && observed.data ? observed.data.station || [] : []);
+  const now = Date.now();
   const qpf = qpfPoints(fire);
   const groups = [
     { label: qpf.label, color: "#fb923c", points: qpf.points, loading: false },
     { label: "MRMS 1h QPE", color: "#38bdf8", points: mrms, loading: waiting },
     ...stationRows.map((row) => ({
       label: row.stid || row.name || "Station",
+      detail: row.name && row.name !== row.stid ? row.name : "",
       color: "#86efac",
       points: row.points || [],
       thin: true,
@@ -380,11 +382,12 @@ function drawChart(fire) {
       loading: waiting,
     },
   ];
-  const now = Date.now();
   const lookback = 24 * 60 * 60 * 1000;
+  const pastStart = now - lookback;
   const forecastTimes = qpf.points.map((point) => parseValid(point.valid)).filter((value) => Number.isFinite(value));
-  const minT = now - lookback;
-  const maxT = Math.max(now, ...forecastTimes);
+  const minT = forecastTimes.length ? Math.min(pastStart, ...forecastTimes) : pastStart;
+  const maxT = Math.max(now, ...(forecastTimes.length ? forecastTimes : [now]));
+  const forecastAhead = forecastTimes.some((time) => time > now + 30 * 60 * 1000);
   const amounts = groups.flatMap((group) => group.points.map((point) => point.inches)).filter((value) => value !== null && value !== undefined);
   const maxY = Math.max(0.1, ...amounts.map(Number));
   const width = 560;
@@ -395,6 +398,7 @@ function drawChart(fire) {
   const yOf = (value) => pad.top + (1 - value / maxY) * (height - pad.top - pad.bottom);
   const plotBottom = height - pad.bottom;
   const xNow = xOf(Math.min(Math.max(now, minT), maxT));
+  const hits = [];
   const marks = groups.map((group) => {
     let path = "";
     let drawing = false;
@@ -413,11 +417,20 @@ function drawChart(fire) {
       const y = yOf(Number(point.inches)).toFixed(1);
       path += `${drawing ? "L" : "M"}${x},${y}`;
       drawing = true;
+      hits.push({
+        label: group.label,
+        detail: group.detail || "",
+        color: group.color,
+        time,
+        inches: Number(point.inches),
+        x: Number(x),
+        y: Number(y),
+      });
       if (!group.thin) dots.push(`<circle cx="${x}" cy="${y}" r="1.8" fill="${group.color}" />`);
     });
-    const width = group.thin ? 1 : 1.8;
+    const stroke = group.thin ? 1 : 1.8;
     const opacity = group.thin ? 0.45 : 1;
-    return `<path d="${path}" fill="none" stroke="${group.color}" stroke-width="${width}" stroke-opacity="${opacity}" />${dots.join("")}`;
+    return `<path d="${path}" fill="none" stroke="${group.color}" stroke-width="${stroke}" stroke-opacity="${opacity}" />${dots.join("")}`;
   }).join("");
   const legend = groups.filter((group) => group.legend !== false).map((group) => {
     const suffix = group.points.length ? "" : (group.loading ? " · loading" : " · none");
@@ -430,19 +443,87 @@ function drawChart(fire) {
       <line x1="${xNow}" y1="${pad.top}" x2="${xNow}" y2="${plotBottom}" stroke="#a8a29e" stroke-dasharray="3 3" />
       <text x="4" y="${yOf(maxY) + 4}" fill="#a8a29e" font-size="11">${maxY.toFixed(2)}</text>
       <text x="4" y="${yOf(0)}" fill="#a8a29e" font-size="11">0</text>
-      <text x="${pad.left}" y="${pad.top - 5}" fill="#7dd3fc" font-size="11">Past 24 h</text>
-      ${maxT - now > 60 * 60 * 1000 ? `<text x="${Math.min(xNow + 6, width - 78)}" y="${pad.top - 5}" fill="#fdba74" font-size="11">Forecast</text>` : ""}
+      <text x="${pad.left}" y="${pad.top - 5}" fill="#7dd3fc" font-size="11">${minT < pastStart - 60 * 60 * 1000 ? "Past" : "Past 24 h"}</text>
+      ${forecastAhead ? `<text x="${Math.min(xNow + 6, width - 78)}" y="${pad.top - 5}" fill="#fdba74" font-size="11">Forecast</text>` : ""}
       <text x="${pad.left}" y="${height - 8}" fill="#a8a29e" font-size="11">${hourLabel(minT)}</text>
-      <text x="${xNow}" y="${height - 8}" fill="#a8a29e" font-size="11" text-anchor="${maxT - now > 60 * 60 * 1000 ? "middle" : "end"}">Now</text>
-      ${maxT - now > 60 * 60 * 1000 ? `<text x="${width - pad.right}" y="${height - 8}" fill="#a8a29e" font-size="11" text-anchor="end">${hourLabel(maxT)}</text>` : ""}
+      <text x="${xNow}" y="${height - 8}" fill="#a8a29e" font-size="11" text-anchor="${forecastAhead ? "middle" : "end"}">Now</text>
+      ${forecastAhead ? `<text x="${width - pad.right}" y="${height - 8}" fill="#a8a29e" font-size="11" text-anchor="end">${hourLabel(maxT)}</text>` : ""}
       ${marks}
+      <line class="hover-line" y1="${pad.top}" y2="${plotBottom}" stroke="#e7e5e4" stroke-dasharray="2 2" visibility="hidden" pointer-events="none" />
+      <circle class="hover-dot" r="3.6" visibility="hidden" pointer-events="none" />
     </svg>
+    <div class="series-tip" hidden></div>
     <div class="legend-row">${legend}</div>
   `;
+  bindChartHover(host, hits, { width, height });
   const problems = observedMatch ? (observed.data?.errors || []) : [];
   note.textContent = waiting
-    ? "Loading the past 24 hours of MRMS and station precipitation. The forecast is already shown to the right of the dashed line."
-    : `The shaded side is the past 24 hours. MRMS is the radar-only 1-hour total. Each faint green line is one station inside the buffer, and the bright green line is the highest station each hour. To the right of the dashed line is the forecast. Grid values are the maximum in the buffer, in inches.${problems.length ? " " + problems.join(" ") : ""}`;
+    ? "Loading the past 24 hours of MRMS and station precipitation. The orange line is the NBM forecast."
+    : `The shaded side is before now. MRMS is the radar-only 1-hour total for the past 24 hours. Each faint green line is one station inside the buffer, and the bright green line is the highest station each hour. The orange line is NBM at the valid time of each hour. Grid values are the maximum in the buffer, in inches.${problems.length ? " " + problems.join(" ") : ""}`;
+}
+
+function bindChartHover(host, hits, plot) {
+  const svg = host.querySelector("svg");
+  const tip = host.querySelector(".series-tip");
+  const guide = svg.querySelector(".hover-line");
+  const dot = svg.querySelector(".hover-dot");
+  const hide = () => {
+    tip.hidden = true;
+    guide.setAttribute("visibility", "hidden");
+    dot.setAttribute("visibility", "hidden");
+  };
+  svg.addEventListener("mousemove", (event) => {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height || !hits.length) {
+      hide();
+      return;
+    }
+    const x = ((event.clientX - rect.left) / rect.width) * plot.width;
+    const y = ((event.clientY - rect.top) / rect.height) * plot.height;
+    let best = null;
+    let bestDistance = 22;
+    hits.forEach((hit) => {
+      const distance = Math.hypot(hit.x - x, hit.y - y);
+      if (distance < bestDistance) {
+        best = hit;
+        bestDistance = distance;
+      }
+    });
+    if (!best) {
+      hide();
+      return;
+    }
+    guide.setAttribute("x1", String(best.x));
+    guide.setAttribute("x2", String(best.x));
+    guide.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", String(best.x));
+    dot.setAttribute("cy", String(best.y));
+    dot.setAttribute("fill", best.color);
+    dot.setAttribute("visibility", "visible");
+    tip.replaceChildren();
+    const name = document.createElement("strong");
+    name.textContent = best.label;
+    name.style.color = best.color;
+    tip.append(name);
+    if (best.detail) {
+      const detail = document.createElement("span");
+      detail.textContent = best.detail;
+      tip.append(detail);
+    }
+    const value = document.createElement("span");
+    value.textContent = `${hourLabel(best.time)} · ${inches(best.inches)} in`;
+    tip.append(value);
+    tip.hidden = false;
+    const hostRect = host.getBoundingClientRect();
+    const tipWidth = Math.min(240, hostRect.width - 8);
+    let left = event.clientX - hostRect.left + 12;
+    let top = event.clientY - hostRect.top - tip.offsetHeight - 8;
+    if (left + tipWidth > hostRect.width) left = Math.max(4, event.clientX - hostRect.left - tipWidth - 8);
+    if (top < 0) top = event.clientY - hostRect.top + 14;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+  });
+  svg.addEventListener("mouseleave", hide);
 }
 
 async function loadObserved(fire) {

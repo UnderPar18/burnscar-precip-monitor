@@ -78,7 +78,7 @@ def settings_from_dict(raw: dict) -> Settings:
         min_acres = float(raw.get("min_acres", 100))
         buffer_miles = float(raw.get("buffer_miles", 5))
         highlight_inches = float(raw.get("highlight_inches", 0.5))
-        forecast_hours = int(raw.get("forecast_hours", 72))
+        forecast_hours = int(raw.get("forecast_hours", 24))
         forecast_source = str(raw.get("forecast_source") or "nbm").strip().lower()
         refresh_minutes = int(raw.get("refresh_minutes", 15))
     except (TypeError, ValueError) as exc:

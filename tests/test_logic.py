@@ -16,7 +16,7 @@ from app.pipeline.nbm import (
     six_hour_leads,
 )
 from app.pipeline.geometry import buffer_geometry, sample_points
-from app.pipeline.mrms import max_in_polygon, select_hourly_files, subset_window
+from app.pipeline.mrms import max_in_polygon, qpe_band_number, select_hourly_files, subset_window
 from app.pipeline.synoptic import hourly_totals
 from app.pipeline.perimeters import perimeter_where
 
@@ -118,6 +118,7 @@ class LogicTests(unittest.TestCase):
     def test_forecast_source_defaults_to_nbm(self):
         settings = settings_from_dict({})
         self.assertEqual(settings.forecast_source, "nbm")
+        self.assertEqual(settings.forecast_hours, 24)
         with self.assertRaises(ValueError):
             settings_from_dict({"forecast_source": "hrrr"})
 
@@ -152,6 +153,28 @@ class LogicTests(unittest.TestCase):
         url = cog_url(run, "qpf01", datetime(2026, 11, 3, 12, tzinfo=timezone.utc))
         self.assertIn("/2026/11/03/1100/qpf01/", url)
         self.assertTrue(url.endswith("blendv5.0_conus_qpf01_2026-11-03T11:00_2026-11-03T12:00.tif"))
+
+    def test_mrms_reader_uses_only_the_named_qpe_field(self):
+        class Band:
+            def __init__(self, element):
+                self.element = element
+
+            def GetMetadataItem(self, key):
+                return self.element if key == "GRIB_ELEMENT" else None
+
+        class Grid:
+            def __init__(self, elements):
+                self.bands = [Band(element) for element in elements]
+                self.RasterCount = len(self.bands)
+
+            def GetRasterBand(self, index):
+                return self.bands[index - 1]
+
+        self.assertEqual(qpe_band_number(Grid(["RadarOnly_QPE_01H"]), "RadarOnly_QPE_01H"), 1)
+        mixed = Grid(["TMP", "RadarOnly_QPE_06H", "APCP"])
+        self.assertEqual(qpe_band_number(mixed, "RadarOnly_QPE_06H"), 2)
+        with self.assertRaises(RuntimeError):
+            qpe_band_number(Grid(["TMP", "APCP"]), "RadarOnly_QPE_01H")
 
 
 if __name__ == "__main__":
